@@ -1,0 +1,18 @@
+{
+    "type": "java",
+    "name": "Debug with Arguments",
+    "request": "launch",
+    "mainClass": "Client",
+    "args": [
+        "postgres"
+    ],
+    "configurations": [
+        {
+            "type": "java",
+            "name": "Client",
+            "request": "launch",
+            "mainClass": "Client",
+            "projectName": "code and data_6fd39f63"
+        }
+    ]
+}
