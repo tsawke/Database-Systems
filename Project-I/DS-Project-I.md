@@ -137,6 +137,8 @@ During the test, the result is **61515.7ms**.
 
 ## Which DBMS is better? PostgreSQL or openGauss, and by which standard?
 
+### Comparison of Select
+
 
 
 ## Remarks
@@ -166,8 +168,8 @@ gsql -h 127.0.0.1 -p 5432 -d postgres -U omm
 ```
 
 ```sh
-sudo podman exec -it opengauss15432 /bin/sh -lc \
-"su - omm -c \"gsql -h 127.0.0.1 -p 5432 -d postgres -U omm -c 'select version();'\""
+podman exec -it --user omm opengauss15432 bash -lc \
+  'gsql -d postgres -p 5432 -U omm -r'
 ```
 
 ```sh
@@ -175,7 +177,8 @@ gsql -h 127.0.0.1 -p 15432 -d postgres -U omm
 ```
 
 ```sh
-podman exec -it opengauss15432 gsql "opengauss://omm:opengauss@127.0.0.1:15432/project1"
+podman exec -it --user omm opengauss15432 bash -lc \
+  'gsql "postgresql://omm:opengauss@host.containers.internal:15432/postgres" -r'
 ```
 
 
