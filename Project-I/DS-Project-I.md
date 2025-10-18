@@ -8,6 +8,12 @@
 
 ## Preface
 
+### Latest Report
+
+[Tsawke's Blog](http://tsawke.com/Data/Blog/content/DS-Project-I.html)
+
+[Github](https://github.com/tsawke/Database-Systems.git)
+
 ### Environment
 
 System: Alibaba Cloud Linux 3.2104 LTS 64位
@@ -88,14 +94,6 @@ Find 162828 results in total
 21234.4 ms
 ```
 
-```sh
-g++ ./SelectAll.cpp -o SelectAll -std=c++17 && ./SelectAll
-```
-
-```sh
-
-```
-
 During 5 tests, the average result is **20116.2ms**.
 
 ### Purpose: Update every '_' in 'curr' to '^'.
@@ -118,7 +116,7 @@ UPDATE clickstream.events SET curr = REPLACE(curr, '_', '^') WHERE curr LIKE '%_
 (5 rows)
 ```
 
-During test, the average result is **225019.1ms**.
+The result is **225019.1ms**.
 
 #### C++
 
@@ -131,15 +129,129 @@ Update 30866250 results in total
 61515.7 ms
 ```
 
-During the test, the result is **61515.7ms**.
+The result is **61515.7ms**.
 
+### Purpose: Find Top-K Popular Pages
 
+#### PostgreSQL
+
+```sql
+SET search_path = clickstream, public;
+EXPLAIN (ANALYZE)
+SELECT curr, SUM(n) AS clicks
+    FROM events
+    GROUP BY curr
+    ORDER BY clicks DESC
+    LIMIT 20;
+```
+
+```sh
+...
+ Planning Time: 9.009 ms
+ Execution Time: 101260.848 ms
+```
+
+The result is **101260.8ms**.
+
+#### C++
+
+```cpp
+g++ ./SelectTopK.cpp -o SelectTopK -std=c++17 -O2 && ./SelectTopK
+```
+
+```sh
+69683.3 ms
+```
+
+The result is **69683.3ms**.
+
+### Conclusion
+
+Overall, C++ streaming program **beat** the DBMS(PostgreSQL) on all tests.
+
+And there're multiple reasons why DBMS seems to be slower than C++:
+
+- All tasks are **one-shot full-scan or rewriting**, thus C++ can lightly and easily streams files, avoiding DBMS overheads.
+- We are using **basic DBMS** without optimization like pg_trgm, B-Tree. (The efficiency won't increase too much even with pg_trgm.)
+
+Thus, the results **doesn't negate** the DBMS strengths.
+
+At some circumstances include **reusable queries, concurrency, strong consistency, complex joins/transactions**, e.t.c., DBMS will perform significantly **better** than data operations in files.
 
 ## Which DBMS is better? PostgreSQL or openGauss, and by which standard?
 
+### Preparation
+
+```sql
+SET max_parallel_workers_per_gather = 4;
+SET work_mem = '256MB';
+```
+
 ### Comparison of Select
 
+```sql
+EXPLAIN (ANALYZE)
+SELECT * FROM clickstream.events WHERE curr ILIKE '%main%';
+```
 
+Results:
+
+PostgreSQL: **24662.1ms**.
+
+openGauss: **27012.6ms**.
+
+### Comparison of Update
+
+```sql
+EXPLAIN (ANALYZE)
+SELECT * FROM clickstream.events WHERE curr ILIKE '%main%';
+```
+
+Results:
+
+PostgreSQL: **225019.1ms**.
+
+openGauss: **244217.9ms**.
+
+### Comparison of Table Join
+
+```sql
+EXPLAIN (ANALYZE)
+SELECT a.prev AS src, b.curr AS dst, COUNT(*) AS paths
+	FROM clickstream.events a
+	JOIN clickstream.events b ON a.curr = b.prev
+	GROUP BY a.prev, b.curr
+	ORDER BY paths DESC
+	LIMIT 20;
+```
+
+Results:
+
+PostgreSQL: **180567.2ms**.
+
+openGauss: **191124.3ms**.
+
+### Comparison of Top-K Query
+
+```sql
+SET search_path = clickstream, public;
+EXPLAIN (ANALYZE)
+SELECT curr, SUM(n) AS clicks
+    FROM events
+    GROUP BY curr
+    ORDER BY clicks DESC
+    LIMIT 20;
+```
+
+Results:
+
+PostgreSQL: **97628.7ms**.
+
+openGauss: **115431.5ms**.
+
+### Conclusion
+
+Overall, we can conclude that PostgreSQL and openGauss have **almost the same efficiency**. They are very **similar** and openGauss is usually **a little bit slower** than PostgreSQL. Therefore, at some specific circumstances, like **looser settings**, openGauss will perhaps **performs better**, but still **a little**.
 
 ## Remarks
 
@@ -162,41 +274,11 @@ psql "postgresql://postgres:postgres@127.0.0.1:5432/project1"
 #### openGauss
 
 ```sh
-sudo podman exec -it opengauss15432 /bin/sh
-su - omm
-gsql -h 127.0.0.1 -p 5432 -d postgres -U omm
-```
-
-```sh
-podman exec -it --user omm opengauss15432 bash -lc \
-  'gsql -d postgres -p 5432 -U omm -r'
+docker exec -e PGPASSWORD='opengauss' -u omm opengauss15432 \
+  bash -lc "gsql -h 127.0.0.1 -p 5432 -U omm -d postgres"
 ```
 
 ```sh
 gsql -h 127.0.0.1 -p 15432 -d postgres -U omm
 ```
-
-```sh
-podman exec -it --user omm opengauss15432 bash -lc \
-  'gsql "postgresql://omm:opengauss@host.containers.internal:15432/postgres" -r'
-```
-
-
-
-### Force password of openGauss to 'opengauss'.
-
-```sh
-sudo podman exec -it opengauss15432 /bin/sh
-su - omm
-echo "$PGDATA"
-PGDATA_DIR=${PGDATA:-$(gsql -d postgres -p 5432 -Atc "show data_directory;")}
-echo "PGDATA_DIR=$PGDATA_DIR"
-gs_guc reload -D "$PGDATA_DIR" -c "password_policy=0"
-gsql -d postgres -p 5432 -c "show password_policy;"   # should be 0
-gsql -d postgres -p 5432 -c "ALTER ROLE omm IDENTIFIED BY 'opengauss' REPLACE 'Opengauss@1';"
-exit
-echo 'omm:opengauss' | chpasswd    # echo opengauss | passwd --stdin omm
-```
-
-
 
