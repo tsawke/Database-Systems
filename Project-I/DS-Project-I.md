@@ -48,6 +48,8 @@ To import datasets to PostgreSQL, run:
 psql "postgresql://postgres:postgres@127.0.0.1:5432/project1" -f './ImportDatasets.sql'
 ```
 
+Similar when importing to openGauss.
+
 Results:
 
 ```sh
@@ -204,7 +206,7 @@ openGauss: **27012.6ms**.
 
 ```sql
 EXPLAIN (ANALYZE)
-SELECT * FROM clickstream.events WHERE curr ILIKE '%main%';
+UPDATE clickstream.events SET curr = REPLACE(curr, '_', '^') WHERE curr LIKE '%_%';
 ```
 
 Results:
@@ -253,6 +255,24 @@ openGauss: **115431.5ms**.
 
 Overall, we can conclude that PostgreSQL and openGauss have **almost the same efficiency**. They are very **similar** and openGauss is usually **a little bit slower** than PostgreSQL. Therefore, at some specific circumstances, like **looser settings**, openGauss will perhaps **performs better**, but still **a little**.
 
+## DBMS Strengthens
+
+### Better Prefix Search
+
+As results showcased, DBMS performs slower than C++ in `select` operation, but if we use prefix search (`ILIKE 'main%'`), DBMS will perform much better.
+
+### Better Join Operations
+
+DBMS will perform better when joining large tables, no matter PostgreSQL, openGauss or other DBMS.
+
+### Extensions
+
+With `pg_trgm`, or some other extensions, we can obtain better operation efficiency, even still slower than C++ at some circumstances.
+
+## Ultimate Conclusion
+
+Overall, C++ streaming performs **better** than DBMS baselines for it's more **basic and trivial**. Nevertheless, in **reusable, concurrent or consistency-critical** circumstances with proper design, DBMS can significantly **outperform** than C++ streaming (Not mentioned too much in this report due to the requirements). And PostgreSQL and openGauss performed **almost the same** and PostgreSQL is a little bit **faster** in most circumstances. While openGauss still has its own advantages.
+
 ## Remarks
 
 ### How to connect?
@@ -260,11 +280,11 @@ Overall, we can conclude that PostgreSQL and openGauss have **almost the same ef
 #### PostgreSQL
 
 ```sh
-sudo -u postgres psql -p 5432 -d postgres
+sudo -u postgres psql -p 5432 -d project1
 ```
 
 ```sh
-psql -h 127.0.0.1 -p 5432 -U postgres -d postgres
+psql -h 127.0.0.1 -p 5432 -U postgres -d project1
 ```
 
 ```sh
@@ -275,10 +295,10 @@ psql "postgresql://postgres:postgres@127.0.0.1:5432/project1"
 
 ```sh
 docker exec -e PGPASSWORD='opengauss' -u omm opengauss15432 \
-  bash -lc "gsql -h 127.0.0.1 -p 5432 -U omm -d postgres"
+  bash -lc "gsql -h 127.0.0.1 -p 5432 -U omm -d project1"
 ```
 
 ```sh
-gsql -h 127.0.0.1 -p 15432 -d postgres -U omm
+gsql -h 127.0.0.1 -p 15432 -d project1 -U omm
 ```
 
