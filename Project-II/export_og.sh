@@ -20,7 +20,7 @@ echo "Target: $OUTPUT_FILE"
 DUMP_PATH="/var/lib/opengauss/data/filmdb_og_temp.sql"
 
 echo "Running gs_dump inside container..."
-docker exec -i og bash -lc "su - omm -c 'gs_dump -p 5432 -d filmdb -f $DUMP_PATH -n public -F p'" 
+docker exec -i og bash -lc "su - omm -c 'gs_dump -p 5432 -f $DUMP_PATH -n public -F p filmdb'" 
 # -F p: plain text
 # -n public: schema (optional, but cleaner)
 

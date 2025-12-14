@@ -37,6 +37,34 @@ def main():
         except Exception as e:
             print(f"[WARN] Failed to load country map: {e}")
 
+    # Manual Aliases for common mismatches
+    name_to_code["united states of america"] = "us"
+    name_to_code["usa"] = "us"
+    name_to_code["united kingdom"] = "gb"
+    name_to_code["uk"] = "gb"
+    name_to_code["south korea"] = "kr"
+    name_to_code["russia"] = "ru"
+    name_to_code["china"] = "cn"
+    name_to_code["hong kong"] = "hk"
+    name_to_code["macao"] = "mo"
+    # Historical / Political Mappings (Best Effort for Data Retention)
+    # Mapping to primary successor state or modern equivalent to ensure import
+    name_to_code["soviet union"] = "ru"       # USSR -> Russia
+    name_to_code["czechoslovakia"] = "cz"     # -> Czechia
+    name_to_code["yugoslavia"] = "rs"         # -> Serbia (primary successor)
+    name_to_code["east germany"] = "de"       # -> Germany
+    name_to_code["west germany"] = "de"       # -> Germany
+    name_to_code["palestinian territory"] = "ps"
+    name_to_code["kyrgyz republic"] = "kg"
+    name_to_code["syrian arab republic"] = "sy"
+    name_to_code["congo"] = "cg"
+    name_to_code["lao people's democratic republic"] = "la"
+    name_to_code["brunei darussalam"] = "bn"
+    name_to_code["vatican city"] = "va"
+    name_to_code["cote d'ivoire"] = "ci"
+    name_to_code["burma"] = "mm"
+    name_to_code["north korea"] = "kp"
+
     # 1. Inspect header to map columns
     # ... (header inspection logic remains) ...
     sample = pd.read_csv(inp, nrows=5)
@@ -92,13 +120,38 @@ def main():
         print(f"[WARN] Could not count lines ({e}), progress bar will not show percentage.")
         total_lines = 0
 
+    print(f"[DEBUG] Headers parsed: {list(sample.columns)}")
+    print(f"[DEBUG] Column map detected: {col_map}")
+    
     processed_lines = 0
     
     first_chunk = True
-    # 2. Process in chunks using Vectorization
-    for chunk in pd.read_csv(inp, chunksize=args.chunksize, dtype=str, on_bad_lines='skip'):
+    
+    # 2. Process in chunks using csv.DictReader (More robust than pandas parser)
+    # We read using standard csv lib, then convert batch to DataFrame for vectorized processing
+    
+    def chunk_generator(filepath, size):
+        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+            reader = csv.DictReader(f)
+            batch = []
+            for row in reader:
+                batch.append(row)
+                if len(batch) >= size:
+                    yield pd.DataFrame(batch)
+                    batch = []
+            if batch:
+                yield pd.DataFrame(batch)
+
+    for chunk in chunk_generator(inp, args.chunksize):
         chunk_len = len(chunk)
         processed_lines += chunk_len
+        
+        # Ensure columns exist (csv.DictReader keys are headers)
+        # We need to map our detected col_map to actual columns in DataFrame
+        # DataFrame columns will be the CSV headers
+        
+        # Pandas auto-detection of column names from dict keys is automatic.
+        # But we need to ensure col_map points to valid columns.
         
         # Create a new DataFrame for output with target columns
         out_df = pd.DataFrame()
@@ -159,59 +212,80 @@ def main():
                 out_df[tgt] = 0
 
         # --- Country ISO2 (Complex Logic) ---
+        # --- Country ISO2 (Complex Logic) ---
+        # Strategy: Coalesce(DirectColumn, ProductionCountriesJSON)
+        # 1. Extract from Direct Column (if exists)
+        s_direct = None
         src_col = col_map["country_iso2"]
         if src_col:
-            # Direct column exists
-            out_df["country_iso2"] = chunk[src_col].fillna("").astype(str).str.strip().str.slice(0, 2).str.lower().str.replace(r'[\r\n]+', '', regex=True)
-        else:
-            # Fallback to JSON parsing OR Name Lookup from production_countries
-            pc_col = col_map["production_countries"]
-            if pc_col:
-                def extract_iso(val):
-                    try:
-                        if not val or pd.isna(val) or val == "[]": return ""
-                        
-                        # 1. Check if it looks like a list/dict structure
-                        val_str = str(val).strip()
-                        if val_str.startswith("["):
-                            import ast
+            s_direct = chunk[src_col].fillna("").astype(str).str.strip().str.slice(0, 2).str.lower().str.replace(r'[\r\n]+', '', regex=True)
+            # Treat "nan" text as empty
+            s_direct = s_direct.replace(r'(?i)^nan$', '', regex=True)
+
+        # 2. Extract from Production Countries JSON
+        s_json = None
+        pc_col = col_map["production_countries"]
+        if pc_col:
+            def extract_iso(val):
+                try:
+                    if not val or pd.isna(val) or val == "[]": return ""
+                    
+                    val_str = str(val).strip()
+                    # A. JSON List parsing
+                    if val_str.startswith("["):
+                        import ast
+                        try:
                             data = ast.literal_eval(val_str)
                             if isinstance(data, list) and data:
                                 first = data[0]
                                 if isinstance(first, dict):
                                     iso = first.get("iso_3166_1") or first.get("iso") or first.get("code")
                                     if iso: return str(iso)[:2].lower()
-                        
-                        # 2. Try simple name lookup (comma separated support?)
-                        # Split by comma, take first
-                        first_name = val_str.split(',')[0].strip().lower()
-                        if first_name in name_to_code:
-                            return name_to_code[first_name]
-                            
-                    except:
-                        pass
-                    return ""
-                
-                # Apply only to this series
-                out_df["country_iso2"] = chunk[pc_col].astype(str).apply(extract_iso)
-            else:
-                out_df["country_iso2"] = ""
+                        except:
+                            pass
+                    
+                    # B. Simple Name Lookup (Fallback)
+                    first_name = val_str.split(',')[0].strip().lower()
+                    if first_name in name_to_code:
+                        return name_to_code[first_name]
+                except:
+                    pass
+                return ""
+            
+            s_json = chunk[pc_col].astype(str).apply(extract_iso)
+
+        # 3. Combine: Use Direct if present, else JSON
+        if s_direct is not None and s_json is not None:
+             out_df["country_iso2"] = np.where(s_direct.ne(""), s_direct, s_json)
+        elif s_direct is not None:
+             out_df["country_iso2"] = s_direct
+        elif s_json is not None:
+             out_df["country_iso2"] = s_json
+        else:
+             out_df["country_iso2"] = ""
 
         if "country_iso2" in out_df.columns:
             # Clean "nan", "NaN" (case insensitive) and strictly enforce 2 chars
-            out_df["country_iso2"] = out_df["country_iso2"].astype(str).str.strip().str.replace(r'[\r\n]+', '', regex=True)
-            out_df["country_iso2"] = out_df["country_iso2"].replace(r'(?i)^nan$', '', regex=True).str.slice(0, 2)
+            out_df["country_iso2"] = out_df["country_iso2"].astype(str).str.lower().replace("nan", "")
+            out_df["country_iso2"] = out_df["country_iso2"].apply(lambda x: x if len(x) == 2 else "")
+        else:
+            out_df["country_iso2"] = ""
 
-        # Reorder columns to match header/schema
-        out_df = out_df[out_fields]
+        # Enforce exact column order for COPY command alignment
+        final_cols = ["tmdb_id", "imdb_id", "title", "original_title", "original_language", 
+                      "release_date", "runtime", "country_iso2", "popularity", 
+                      "vote_average", "vote_count", "budget", "revenue"]
+        
+        # Add missing columns as empty
+        for col in final_cols:
+            if col not in out_df.columns:
+                out_df[col] = ""
+        
+        out_df = out_df[final_cols]
 
-        # --- Write Chunk ---
-        # Let pandas write the header ONLY for the first chunk
-        # Quote ALL mode to ensure consistency including Header if possible? 
-        # Actually standard CSV headers are often unquoted, but if we mix, it's bad.
-        # But pandas to_csv quoting=csv.QUOTE_ALL will quote header too if header=True.
-        # This aligns everything perfectly.
-        out_df.to_csv(outp, mode='w' if first_chunk else 'a', index=False, header=first_chunk, encoding='utf-8', quoting=csv.QUOTE_ALL, lineterminator='\n')
+        # Write to CSV
+        # QUOTE_MINIMAL is compatible with standard COPY
+        out_df.to_csv(outp, mode='w' if first_chunk else 'a', index=False, header=first_chunk, encoding='utf-8', quoting=csv.QUOTE_MINIMAL, lineterminator='\n')
         
         first_chunk = False
 

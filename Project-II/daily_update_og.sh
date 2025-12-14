@@ -31,6 +31,7 @@ if [ -f "$KAGGLE_CSV" ]; then
     python3 normalize_kaggle_tmdb_csv.py \
       --in "$KAGGLE_CSV" \
       --out "$KAGGLE_NORM_CSV" \
+      --chunksize 10000 \
       --country-map "country_map.csv"
       
     # 1.2 Load Staging
@@ -40,8 +41,24 @@ if [ -f "$KAGGLE_CSV" ]; then
     
     # Perform the data load via COPY FROM STDIN
     # Note: openGauss gsql support COPY ... FROM STDIN
+    # Perform the data load via COPY FROM FILE (more robust than STDIN pipe)
+    # Perform the data load via COPY FROM FILE (using SQL file to avoid quoting hell)
     echo "Copying data..."
-    cat "$KAGGLE_NORM_CSV" | docker exec -i og bash -lc "su - omm -c 'gsql -d filmdb -p 5432 -v ON_ERROR_STOP=on -c \"COPY staging_movies_kaggle(tmdb_id,imdb_id,title,original_title,original_language,release_date,runtime,country_iso2,popularity,vote_average,vote_count,budget,revenue) FROM STDIN WITH (FORMAT csv, HEADER true, FORCE_NULL(release_date, runtime, popularity, vote_average, vote_count, budget, revenue))\"'"
+    docker cp "$KAGGLE_NORM_CSV" og:/tmp/tmdb_kaggle.csv
+    
+    # Generate SQL file locally
+    cat <<EOF > pkg_kaggle_copy.sql
+COPY staging_movies_kaggle(tmdb_id,imdb_id,title,original_title,original_language,release_date,runtime,country_iso2,popularity,vote_average,vote_count,budget,revenue) 
+FROM '/tmp/tmdb_kaggle.csv' 
+WITH (FORMAT csv, HEADER true);
+EOF
+    
+    docker cp pkg_kaggle_copy.sql og:/tmp/pkg_kaggle_copy.sql
+    docker exec -i og bash -lc "su - omm -c 'gsql -d filmdb -p 5432 -v ON_ERROR_STOP=on -f /tmp/pkg_kaggle_copy.sql'"
+    
+    # Cleanup
+    docker exec og rm -f /tmp/tmdb_kaggle.csv /tmp/pkg_kaggle_copy.sql
+    rm -f pkg_kaggle_copy.sql
     
     # 1.3 Merge
     echo "Merging Kaggle data into Core..."
@@ -78,7 +95,22 @@ if [ -f "$TMDB_DELTA_CSV" ]; then
     docker exec -i og bash -lc "su - omm -c 'gsql -d filmdb -p 5432 -v ON_ERROR_STOP=on -1'" < 05_load_tmdb_delta_staging.sql
     
     # Copy data
-    cat "$TMDB_DELTA_CSV" | docker exec -i og bash -lc "su - omm -c 'gsql -d filmdb -p 5432 -v ON_ERROR_STOP=on -c \"COPY staging_movies_tmdb_delta(tmdb_id,imdb_id,title,original_title,original_language,release_date,runtime,country_iso2,popularity,vote_average,vote_count,budget,revenue) FROM STDIN WITH (FORMAT csv, HEADER true, FORCE_NULL(release_date, runtime, popularity, vote_average, vote_count, budget, revenue))\"'"
+    # Perform the data load via COPY FROM FILE
+    docker cp "$TMDB_DELTA_CSV" og:/tmp/tmdb_delta.csv
+    
+    # Generate SQL file locally
+    cat <<EOF > pkg_delta_copy.sql
+COPY staging_movies_tmdb_delta(tmdb_id,imdb_id,title,original_title,original_language,release_date,runtime,country_iso2,popularity,vote_average,vote_count,budget,revenue) 
+FROM '/tmp/tmdb_delta.csv' 
+WITH (FORMAT csv, HEADER true);
+EOF
+
+    docker cp pkg_delta_copy.sql og:/tmp/pkg_delta_copy.sql
+    docker exec -i og bash -lc "su - omm -c 'gsql -d filmdb -p 5432 -v ON_ERROR_STOP=on -f /tmp/pkg_delta_copy.sql'"
+    
+    # Cleanup
+    docker exec og rm -f /tmp/tmdb_delta.csv /tmp/pkg_delta_copy.sql
+    rm -f pkg_delta_copy.sql
 
     # 2.3 Merge Delta
     echo "Merging TMDB Delta into Core..."

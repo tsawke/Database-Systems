@@ -31,6 +31,7 @@ if [ -f "$KAGGLE_CSV" ]; then
     python3 normalize_kaggle_tmdb_csv.py \
       --in "$KAGGLE_CSV" \
       --out "$KAGGLE_NORM_CSV" \
+      --chunksize 10000 \
       --country-map "country_map.csv"
       
     echo "Normalized Kaggle CSV written to: $KAGGLE_NORM_CSV"
@@ -42,7 +43,7 @@ if [ -f "$KAGGLE_CSV" ]; then
     
     # Perform the data load via COPY FROM STDIN
     echo "Copying data..."
-    cat "$KAGGLE_NORM_CSV" | docker exec -i pg psql -U postgres -d filmdb -v ON_ERROR_STOP=1 -c "\copy staging_movies_kaggle(tmdb_id,imdb_id,title,original_title,original_language,release_date,runtime,country_iso2,popularity,vote_average,vote_count,budget,revenue) FROM STDIN WITH (FORMAT CSV, HEADER, FORCE_NULL(release_date, runtime, popularity, vote_average, vote_count, budget, revenue))"
+    cat "$KAGGLE_NORM_CSV" | docker exec -i pg psql -U postgres -d filmdb -v ON_ERROR_STOP=1 -c "\copy staging_movies_kaggle(tmdb_id,imdb_id,title,original_title,original_language,release_date,runtime,country_iso2,popularity,vote_average,vote_count,budget,revenue) FROM STDIN WITH (FORMAT CSV, HEADER)"
     
     # 1.3 Merge
     echo "Merging Kaggle data into Core..."
@@ -75,7 +76,7 @@ if [ -f "$TMDB_DELTA_CSV" ]; then
     docker exec -i pg psql -U postgres -d filmdb -v ON_ERROR_STOP=1 -1 < 05_load_tmdb_delta_staging.sql
     
     # Copy data
-    cat "$TMDB_DELTA_CSV" | docker exec -i pg psql -U postgres -d filmdb -v ON_ERROR_STOP=1 -c "\copy staging_movies_tmdb_delta(tmdb_id,imdb_id,title,original_title,original_language,release_date,runtime,country_iso2,popularity,vote_average,vote_count,budget,revenue) FROM STDIN WITH (FORMAT CSV, HEADER, FORCE_NULL(release_date, runtime, popularity, vote_average, vote_count, budget, revenue))"
+    cat "$TMDB_DELTA_CSV" | docker exec -i pg psql -U postgres -d filmdb -v ON_ERROR_STOP=1 -c "\copy staging_movies_tmdb_delta(tmdb_id,imdb_id,title,original_title,original_language,release_date,runtime,country_iso2,popularity,vote_average,vote_count,budget,revenue) FROM STDIN WITH (FORMAT CSV, HEADER)"
 
     # 2.3 Merge Delta
     echo "Merging TMDB Delta into Core..."

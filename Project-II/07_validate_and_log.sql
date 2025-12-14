@@ -10,11 +10,11 @@ WHERE c.country_code IS NULL;
 -- 2) tmdb_id uniqueness sanity check (should be 0 due to unique index)
 SELECT COUNT(*) AS duplicated_tmdb_id_groups
 FROM (
-  SELECT tmdb_id
-  FROM movies
-  WHERE tmdb_id IS NOT NULL
-  GROUP BY tmdb_id
-  HAVING COUNT(*) > 1
+    SELECT tmdb_id
+    FROM movies
+    WHERE tmdb_id IS NOT NULL
+    GROUP BY tmdb_id
+    HAVING COUNT(*) > 1
 ) t;
 
 -- 3) Basic recent coverage signal (not a hard correctness test, but useful in reports)

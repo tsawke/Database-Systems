@@ -19,7 +19,7 @@ echo ""
 # openGauss Validation
 echo "--- [2/2] Validating openGauss (og) ---"
 if docker ps | grep -q "og"; then
-    docker exec -i og bash -lc "su - omm -c 'gsql -d filmdb -p 5432 -v ON_ERROR_STOP=on -f -'" < 07_validate_and_log.sql
+    docker exec -i og bash -lc "su - omm -c 'gsql -d filmdb -p 5432 -v ON_ERROR_STOP=on -1'" < 07_validate_and_log.sql
 else
     echo "[WARN] Container 'og' not found or not running."
 fi
