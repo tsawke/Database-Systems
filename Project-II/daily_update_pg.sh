@@ -24,10 +24,17 @@ if [ -f "$KAGGLE_CSV" ]; then
     echo "Found Kaggle CSV at $KAGGLE_CSV. Proceeding with normalization..."
     
     # 1.1 Normalize
+    # Export country map for name-to-code resolution
+    echo "Exporting country map..."
+    docker exec -i pg psql -U postgres -d filmdb -c "\copy (SELECT country_name, country_code FROM countries) TO STDOUT WITH CSV" > country_map.csv
+    
     python3 normalize_kaggle_tmdb_csv.py \
       --in "$KAGGLE_CSV" \
-      --out "$KAGGLE_NORM_CSV"
+      --out "$KAGGLE_NORM_CSV" \
+      --country-map "country_map.csv"
       
+    echo "Normalized Kaggle CSV written to: $KAGGLE_NORM_CSV"
+    
     # 1.2 Load Staging
     echo "Loading Kaggle staging..."
     # Execute the TRUNCATE/CREATE form
@@ -35,7 +42,7 @@ if [ -f "$KAGGLE_CSV" ]; then
     
     # Perform the data load via COPY FROM STDIN
     echo "Copying data..."
-    cat "$KAGGLE_NORM_CSV" | docker exec -i pg psql -U postgres -d filmdb -v ON_ERROR_STOP=1 -c "\copy staging_movies_kaggle FROM STDIN WITH CSV HEADER"
+    cat "$KAGGLE_NORM_CSV" | docker exec -i pg psql -U postgres -d filmdb -v ON_ERROR_STOP=1 -c "\copy staging_movies_kaggle(tmdb_id,imdb_id,title,original_title,original_language,release_date,runtime,country_iso2,popularity,vote_average,vote_count,budget,revenue) FROM STDIN WITH (FORMAT CSV, HEADER, FORCE_NULL(release_date, runtime, popularity, vote_average, vote_count, budget, revenue))"
     
     # 1.3 Merge
     echo "Merging Kaggle data into Core..."
@@ -68,7 +75,7 @@ if [ -f "$TMDB_DELTA_CSV" ]; then
     docker exec -i pg psql -U postgres -d filmdb -v ON_ERROR_STOP=1 -1 < 05_load_tmdb_delta_staging.sql
     
     # Copy data
-    cat "$TMDB_DELTA_CSV" | docker exec -i pg psql -U postgres -d filmdb -v ON_ERROR_STOP=1 -c "\copy staging_movies_tmdb_delta FROM STDIN WITH CSV HEADER"
+    cat "$TMDB_DELTA_CSV" | docker exec -i pg psql -U postgres -d filmdb -v ON_ERROR_STOP=1 -c "\copy staging_movies_tmdb_delta(tmdb_id,imdb_id,title,original_title,original_language,release_date,runtime,country_iso2,popularity,vote_average,vote_count,budget,revenue) FROM STDIN WITH (FORMAT CSV, HEADER, FORCE_NULL(release_date, runtime, popularity, vote_average, vote_count, budget, revenue))"
 
     # 2.3 Merge Delta
     echo "Merging TMDB Delta into Core..."

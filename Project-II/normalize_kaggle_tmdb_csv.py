@@ -18,16 +18,32 @@ def main():
     ap.add_argument("--in", dest="inp", required=True, help="Input Kaggle CSV path")
     ap.add_argument("--out", dest="outp", required=True, help="Output normalized CSV path")
     ap.add_argument("--chunksize", type=int, default=500000, help="Chunk size for streaming")
+    ap.add_argument("--country-map", dest="country_map", help="CSV path mapping country_name to country_code")
     args = ap.parse_args()
 
     inp = os.path.expanduser(args.inp)
     outp = os.path.expanduser(args.outp)
+    
+    # Load Country Map
+    name_to_code = {}
+    if args.country_map and os.path.exists(args.country_map):
+        try:
+            with open(args.country_map, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if len(row) >= 2:
+                        name_to_code[row[0].strip().lower()] = row[1].strip().lower()
+            print(f"[INFO] Loaded {len(name_to_code)} country mappings.")
+        except Exception as e:
+            print(f"[WARN] Failed to load country map: {e}")
 
     # 1. Inspect header to map columns
+    # ... (header inspection logic remains) ...
     sample = pd.read_csv(inp, nrows=5)
     cols_lc = [c.lower() for c in sample.columns]
     col_lc_to_real = {c.lower(): c for c in sample.columns}
 
+    # ... (column mapping logic remains, assuming col_map is available) ...
     # Identify TMDB ID column
     tmdb_id_col = pick_col(cols_lc, ["tmdb_id", "id", "movie_id"])
     if not tmdb_id_col:
@@ -63,15 +79,8 @@ def main():
 
     os.makedirs(os.path.dirname(outp), exist_ok=True)
     
-    # Write header first
-    with open(outp, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=out_fields)
-        w.writeheader()
-
     print(f"Processing {inp} -> {outp} (Vectorized)...")
-
-    # 1.5 Calculate total lines for progress bar
-    # Using subprocess wc -l for speed on Linux
+    # ... (lines counting remains) ...
     try:
         import subprocess
         print("[INFO] Counting total lines for progress calculation...")
@@ -85,6 +94,7 @@ def main():
 
     processed_lines = 0
     
+    first_chunk = True
     # 2. Process in chunks using Vectorization
     for chunk in pd.read_csv(inp, chunksize=args.chunksize, dtype=str, on_bad_lines='skip'):
         chunk_len = len(chunk)
@@ -93,7 +103,7 @@ def main():
         # Create a new DataFrame for output with target columns
         out_df = pd.DataFrame()
 
-        # --- TMDB ID (Required, Int) ---
+        # ... (tmdb_id logic) ...
         # Coerce to numeric, drop NaNs or 0
         s_tmdb = pd.to_numeric(chunk[col_map["tmdb_id"]], errors='coerce').fillna(0).astype(np.int64)
         out_df["tmdb_id"] = s_tmdb
@@ -111,14 +121,14 @@ def main():
         out_df = out_df[valid_mask].copy()
         chunk = chunk[valid_mask].reset_index(drop=True) # Align source chunk
 
-        # --- String Columns (Strip) ---
+        # --- String Columns (Strip & Clean) ---
         for tgt, src in [("imdb_id", "imdb_id"), ("title", "title"), 
                          ("original_title", "original_title"), ("original_language", "original_language"),
                          ("release_date", "release_date")]:
             src_col = col_map[src]
             if src_col:
-                # fillna, astype(str), strip
-                out_df[tgt] = chunk[src_col].fillna("").astype(str).str.strip()
+                # fillna, astype(str), strip, and replace internal newlines
+                out_df[tgt] = chunk[src_col].fillna("").astype(str).str.strip().str.replace(r'[\r\n]+', ' ', regex=True)
             else:
                 out_df[tgt] = ""
 
@@ -152,21 +162,32 @@ def main():
         src_col = col_map["country_iso2"]
         if src_col:
             # Direct column exists
-            out_df["country_iso2"] = chunk[src_col].fillna("").astype(str).str.strip().str.slice(0, 2).str.lower()
+            out_df["country_iso2"] = chunk[src_col].fillna("").astype(str).str.strip().str.slice(0, 2).str.lower().str.replace(r'[\r\n]+', '', regex=True)
         else:
-            # Fallback to JSON parsing from production_countries
+            # Fallback to JSON parsing OR Name Lookup from production_countries
             pc_col = col_map["production_countries"]
             if pc_col:
                 def extract_iso(val):
                     try:
-                        if not val or pd.isna(val): return ""
-                        if "iso_3166_1" not in val and "iso" not in val: return "" # optimization
-                        data = json.loads(val.replace("'", '"')) # Common issue in CSVs: Python dict string repr
-                        if isinstance(data, list) and data:
-                            first = data[0]
-                            if isinstance(first, dict):
-                                iso = first.get("iso_3166_1") or first.get("iso") or first.get("code")
-                                if iso: return str(iso)[:2].lower()
+                        if not val or pd.isna(val) or val == "[]": return ""
+                        
+                        # 1. Check if it looks like a list/dict structure
+                        val_str = str(val).strip()
+                        if val_str.startswith("["):
+                            import ast
+                            data = ast.literal_eval(val_str)
+                            if isinstance(data, list) and data:
+                                first = data[0]
+                                if isinstance(first, dict):
+                                    iso = first.get("iso_3166_1") or first.get("iso") or first.get("code")
+                                    if iso: return str(iso)[:2].lower()
+                        
+                        # 2. Try simple name lookup (comma separated support?)
+                        # Split by comma, take first
+                        first_name = val_str.split(',')[0].strip().lower()
+                        if first_name in name_to_code:
+                            return name_to_code[first_name]
+                            
                     except:
                         pass
                     return ""
@@ -176,9 +197,23 @@ def main():
             else:
                 out_df["country_iso2"] = ""
 
+        if "country_iso2" in out_df.columns:
+            # Clean "nan", "NaN" (case insensitive) and strictly enforce 2 chars
+            out_df["country_iso2"] = out_df["country_iso2"].astype(str).str.strip().str.replace(r'[\r\n]+', '', regex=True)
+            out_df["country_iso2"] = out_df["country_iso2"].replace(r'(?i)^nan$', '', regex=True).str.slice(0, 2)
+
+        # Reorder columns to match header/schema
+        out_df = out_df[out_fields]
+
         # --- Write Chunk ---
-        # mode='a', header=False
-        out_df.to_csv(outp, mode='a', index=False, header=False, encoding='utf-8')
+        # Let pandas write the header ONLY for the first chunk
+        # Quote ALL mode to ensure consistency including Header if possible? 
+        # Actually standard CSV headers are often unquoted, but if we mix, it's bad.
+        # But pandas to_csv quoting=csv.QUOTE_ALL will quote header too if header=True.
+        # This aligns everything perfectly.
+        out_df.to_csv(outp, mode='w' if first_chunk else 'a', index=False, header=first_chunk, encoding='utf-8', quoting=csv.QUOTE_ALL, lineterminator='\n')
+        
+        first_chunk = False
 
         if total_lines > 0:
             pct = (processed_lines / total_lines) * 100

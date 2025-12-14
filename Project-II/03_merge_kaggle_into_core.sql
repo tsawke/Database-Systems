@@ -6,7 +6,7 @@ WITH prepared AS (
     s.tmdb_id,
     NULLIF(TRIM(s.imdb_id), '') AS imdb_id,
     SUBSTRING(TRIM(COALESCE(s.title, '')) FROM 1 FOR 100) AS title_trim100,
-    TRIM(COALESCE(s.original_title, '')) AS original_title,
+    SUBSTRING(TRIM(COALESCE(s.original_title, '')) FROM 1 FOR 200) AS original_title,
     NULLIF(TRIM(COALESCE(s.original_language, '')), '') AS original_language,
     s.release_date,
     CASE
@@ -56,7 +56,7 @@ attach_tmdb AS (
     vote_count = COALESCE(m.vote_count, f.vote_count),
     budget = COALESCE(m.budget, f.budget),
     revenue = COALESCE(m.revenue, f.revenue),
-    running_time = CASE WHEN m.running_time = 0 AND f.running_time_safe > 0 THEN f.running_time_safe ELSE m.running_time END
+    runtime = CASE WHEN m.runtime = 0 AND f.running_time_safe > 0 THEN f.running_time_safe ELSE m.runtime END
   FROM filtered f
   WHERE m.tmdb_id IS NULL
     AND f.tmdb_id IS NOT NULL
@@ -70,7 +70,17 @@ to_insert_base AS (
   SELECT f.*
   FROM filtered f
   WHERE (
-    f.tmdb_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM movies m WHERE m.tmdb_id = f.tmdb_id)
+    f.tmdb_id IS NOT NULL 
+    AND NOT EXISTS (SELECT 1 FROM movies m WHERE m.tmdb_id = f.tmdb_id)
+    -- Crucial fix: Also exclude if it matches a legacy row that attach_tmdb is about to update!
+    -- Because CTEs see the snapshot before update, we must manually filter these out.
+    AND NOT EXISTS (
+      SELECT 1 FROM movies m
+      WHERE m.tmdb_id IS NULL
+        AND m.title = f.title_trim100
+        AND m.country = f.country_code
+        AND m.year_released = f.year_released
+    )
   ) OR (
     f.tmdb_id IS NULL AND NOT EXISTS (
       SELECT 1 FROM movies m
@@ -78,20 +88,33 @@ to_insert_base AS (
     )
   )
 ),
--- D) If a tmdb_id row collides on legacy key with a different existing tmdb_id, disambiguate title deterministically
+-- C2) Add batch-level deduplication rank
+to_insert_ranked AS (
+  SELECT *,
+    ROW_NUMBER() OVER (
+      PARTITION BY title_trim100, country_code, year_released
+      ORDER BY tmdb_id
+    ) as match_rn
+  FROM to_insert_base
+),
+-- D) If a tmdb_id row collides on legacy key with a different existing tmdb_id OR with another row in the same batch, disambiguate
 to_insert AS (
   SELECT
     t.*,
     CASE
+      -- Case 1: Collision with existing DB row (different TMDB ID)
       WHEN t.tmdb_id IS NOT NULL AND EXISTS (
         SELECT 1 FROM movies m
         WHERE m.title = t.title_trim100 AND m.country = t.country_code AND m.year_released = t.year_released
           AND m.tmdb_id IS NOT NULL AND m.tmdb_id <> t.tmdb_id
       )
       THEN SUBSTRING(t.title_trim100 FROM 1 FOR 80) || ' [tmdb:' || t.tmdb_id::TEXT || ']'
+      -- Case 2: Collision within this batch (duplicate keys in input) - match_rn > 1 means it's the 2nd/3rd instance
+      WHEN t.match_rn > 1
+      THEN SUBSTRING(t.title_trim100 FROM 1 FOR 80) || ' [tmdb:' || t.tmdb_id::TEXT || ']'
       ELSE t.title_trim100
     END AS title_final
-  FROM to_insert_base t
+  FROM to_insert_ranked t
 ),
 numbered AS (
   SELECT
@@ -103,7 +126,7 @@ maxid AS (
   SELECT COALESCE(MAX(movieid), 0) AS max_movieid FROM movies
 )
 INSERT INTO movies (
-  movieid, title, country, year_released, running_time,
+  movieid, title, country, year_released, runtime,
   tmdb_id, imdb_id, release_date, original_title, original_language,
   popularity, vote_average, vote_count, budget, revenue
 )
@@ -134,6 +157,10 @@ WITH prepared AS (
     TRIM(COALESCE(s.original_title, '')) AS original_title,
     NULLIF(TRIM(COALESCE(s.original_language, '')), '') AS original_language,
     s.release_date,
+    CASE
+      WHEN s.runtime IS NOT NULL THEN EXTRACT(YEAR FROM s.release_date)::INT
+      ELSE NULL
+    END AS year_released,
     CASE
       WHEN s.runtime IS NULL THEN 0
       WHEN s.runtime BETWEEN 0 AND 200 THEN s.runtime
@@ -171,13 +198,24 @@ SET
   vote_count = COALESCE(m.vote_count, f.vote_count),
   budget = COALESCE(m.budget, f.budget),
   revenue = COALESCE(m.revenue, f.revenue),
-  running_time = CASE WHEN m.running_time = 0 AND f.running_time_safe > 0 THEN f.running_time_safe ELSE m.running_time END
+  runtime = CASE WHEN m.runtime = 0 AND f.running_time_safe > 0 THEN f.running_time_safe ELSE m.runtime END
 FROM filtered f
 WHERE m.tmdb_id = f.tmdb_id;
+
+-- G) Update last sync date based on actual data
+-- User requested: find the latest date from the table.
+-- We take MAX(release_date) but cap it at CURRENT_DATE to avoid future releases messing up the delta fetch pointer.
+UPDATE pipeline_state
+SET v = (
+  SELECT COALESCE(MAX(release_date), '2019-12-31')::TEXT
+  FROM movies
+  WHERE release_date <= CURRENT_DATE
+)
+WHERE k = 'tmdb_last_sync';
 
 -- F) Log run (baseline import); dataset_version is read from pipeline_state
 INSERT INTO movie_update_log(source, dataset_version, start_date, end_date, status, notes)
 SELECT 'kaggle', (SELECT v FROM pipeline_state WHERE k = 'kaggle_dataset_version'), NULL, CURRENT_DATE, 'SUCCESS',
-       'Kaggle baseline merged into core tables via staging + deterministic merge rules.';
+       'Kaggle baseline merged. Updated tmdb_last_sync based on MAX(release_date) in db.';
 
 COMMIT;
